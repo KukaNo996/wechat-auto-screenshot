@@ -54,7 +54,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 # --------------------------------------------------------------------------
 # 协议常量
@@ -78,6 +78,10 @@ RECT_MIN_W = 260
 RECT_MAX_H = 240
 RECT_MIN_H = 90
 
+# 二维码外围补白（像素）。静区按标准是 4 模块，这里再额外补一圈，
+# 避免嘈杂背景干扰定位图案导致识别失败。
+QR_WHITE_PAD = 4
+
 _FONT_CANDIDATES = (
     r"C:\Windows\Fonts\msyh.ttc",      # 微软雅黑
     r"C:\Windows\Fonts\msyhbd.ttc",
@@ -86,6 +90,24 @@ _FONT_CANDIDATES = (
     "/System/Library/Fonts/PingFang.ttc",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 )
+
+# 水印文案。中文环境下全部走中文，避免图片上出现 TS / WSS 这类英文缩写。
+LABELS = {
+    "zh": {
+        "time_fmt": "%Y年%m月%d日 %H:%M:%S",
+        "ts_prefix": "时间戳",
+        "code_prefix": "防伪码",
+    },
+    "en": {
+        "time_fmt": "%Y-%m-%d %H:%M:%S",
+        "ts_prefix": "TS",
+        "code_prefix": "WSS",
+    },
+}
+
+
+def labels_for(language: Optional[str]) -> dict:
+    return LABELS.get((language or "zh").lower(), LABELS["zh"])
 
 
 class WatermarkError(Exception):
@@ -106,7 +128,9 @@ def watermark_rect(size: Tuple[int, int]) -> Tuple[int, int, int, int]:
     if w <= 0 or h <= 0:
         raise WatermarkError(f"图片尺寸非法: {size}")
 
-    rect_w = min(RECT_MAX_W, max(RECT_MIN_W, w // 2))
+    # 宽度取 60%：太小的话中等尺寸截图（600~900px）放不下「二维码 + 三行文字」，
+    # 只能退化成纯文字，扫不了码。大图仍受 RECT_MAX_W 封顶，视觉无变化。
+    rect_w = min(RECT_MAX_W, max(RECT_MIN_W, w * 3 // 5))
     rect_h = min(RECT_MAX_H, max(RECT_MIN_H, h * 2 // 5))
     rect_w = min(rect_w, w)
     rect_h = min(rect_h, h)
@@ -256,26 +280,38 @@ def verify_code(code: str, secret: bytes) -> dict:
 # --------------------------------------------------------------------------
 
 def build_payload(ts: int, size: Tuple[int, int], code: str) -> str:
-    human = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
-    return f"WSS1|{human}|{ts}|{code}"
+    """
+    二维码载荷。
+
+    刻意只放「时间戳 + 防伪码」，不放人类可读时间：多 19 个字符会把二维码
+    抬到更高的版本，模块数变多、每模块像素变少，反而在紧凑布局下扫不出来。
+    时间信息本来就能从防伪码里还原，不必重复占位。
+    """
+    return f"WSS1|{int(ts)}|{code}"
 
 
 def parse_payload(text: str) -> dict:
-    """解析二维码里的载荷文本（3 或 4 字段均兼容）。"""
+    """解析二维码载荷（兼容 3 字段与旧的 4 字段格式）。"""
     parts = str(text).strip().split("|")
     if len(parts) < 3 or not parts[0].startswith("WSS"):
         raise WatermarkError(f"无法识别的载荷格式: {text!r}")
 
     info = {"magic": parts[0], "time": "", "timestamp": None, "code": ""}
-    if len(parts) >= 4:
+
+    if len(parts) >= 4:                      # 旧格式: WSS1|时间|时间戳|码
         info["time"] = parts[1]
         try:
             info["timestamp"] = int(parts[2])
         except ValueError:
             info["timestamp"] = None
         info["code"] = parts[3]
-    else:
-        info["time"] = parts[1]
+    else:                                    # 新格式: WSS1|时间戳|码
+        mid = parts[1]
+        if mid.isdigit():
+            info["timestamp"] = int(mid)
+            info["time"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(info["timestamp"]))
+        else:
+            info["time"] = mid
         info["code"] = parts[2]
     return info
 
@@ -318,23 +354,26 @@ def _make_qr(text: str, target: int) -> Optional[Image.Image]:
         qr = qrcode.QRCode(
             error_correction=qrcode.constants.ERROR_CORRECT_M,
             box_size=1,
-            border=2,
+            border=4,          # 标准静区宽度，低于 4 模块时 OpenCV 容易定不到位
         )
         qr.add_data(text)
         qr.make(fit=True)
 
         modules = qr.modules_count + qr.border * 2
-        scale = max(1, int(target) // max(1, modules))
+        # 每模块至少 2px，否则扫码识别率骤降；round 让成品尽量贴近目标高度
+        scale = max(2, int(round(float(target) / max(1, modules))))
         if scale > 1:
             qr = qrcode.QRCode(
                 error_correction=qrcode.constants.ERROR_CORRECT_M,
                 box_size=scale,
-                border=2,
+                border=4,
             )
             qr.add_data(text)
             qr.make(fit=True)
 
-        return qr.make_image(fill_color="black", back_color="white").convert("RGB")
+        img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+        # 外围再补一圈纯白，把背景噪点推离定位图案，明显提升识别率
+        return ImageOps.expand(img, border=QR_WHITE_PAD, fill="white")
     except Exception:
         return None
 
@@ -347,9 +386,10 @@ class WatermarkOptions:
     opacity: float = 0.92          # 文字不透明度 0~1
     margin: int = 14               # 距图片边缘的内边距
     show_timestamp: bool = True    # 是否显示 Unix 时间戳那一行
-    qr: bool = True                # 是否在右侧放二维码
-    qr_size: int = 120             # 二维码目标边长（自动按模块整数倍取整）
-    code_prefix: str = "WSS"       # 防伪码前面的标识
+    qr: bool = True                # 是否在文字左侧放二维码
+    qr_size: int = 120             # 二维码目标边长（会自动按模块整数倍取整）
+    language: str = "zh"           # 水印文案语言: zh / en
+    code_prefix: Optional[str] = None  # 覆盖「防伪码」这个标签；None = 跟随语言
 
 
 @dataclass
@@ -393,50 +433,70 @@ def apply_watermark(img: Image.Image,
     rect_w, rect_h = x1 - x0 + 1, y1 - y0 + 1
     margin = max(4, int(opts.margin))
 
+    lb = labels_for(opts.language)
+    code_label = opts.code_prefix if opts.code_prefix else lb["code_prefix"]
+
     lines = [
-        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)),
+        time.strftime(lb["time_fmt"], time.localtime(ts)),
     ]
     if opts.show_timestamp:
-        lines.append(f"TS {ts}")
-    lines.append(f"{opts.code_prefix} {code}")
+        lines.append(f"{lb['ts_prefix']} {ts}")
+    lines.append(f"{code_label} {code}")
 
-    # 2) 自适应布局：小图放不下就缩字号、缩二维码、最后关掉二维码
-    qr_candidates = []
-    if opts.qr:
-        for cand in (opts.qr_size, 96, 72, 56):
-            if cand <= rect_h - margin * 2 and cand not in qr_candidates:
-                qr_candidates.append(cand)
-    qr_candidates.append(0)
+    # 2) 布局：以文字为主，二维码高度对齐文字块并紧贴其右侧
+    gap = 12                      # 文字与二维码之间的间距
+    avail_w = rect_w - margin * 2
+    avail_h = rect_h - margin * 2
+
+    _qr_cache = {}
+
+    def _qr_for(target: int):
+        """按目标高度生成二维码（同尺寸复用，避免循环里反复编码）。"""
+        target = max(0, int(target))
+        if target not in _qr_cache:
+            _qr_cache[target] = _make_qr(payload, target) if target else None
+        return _qr_cache[target]
+
+    def _measure(fs: int, texts):
+        f = _load_font(fs)
+        d = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+        widths = [_text_size(d, s, f)[0] for s in texts]
+        # 行高用字体自身的 metrics，而不是 textbbox：
+        # 纯英文没有下伸部，textbbox 量出来会比中文矮一截，
+        # 导致中英文水印块高度不一致、英文模式下二维码被误判为"过大"。
+        try:
+            ascent, descent = f.getmetrics()
+            th = ascent + descent
+        except Exception:
+            th = max(_text_size(d, s, f)[1] for s in texts)
+        return f, max(1, int(th * 1.35)), max(widths)
 
     font = None
-    qr_size = 0
     line_h = 0
-    gap = 10
-    for qr_cand in qr_candidates:
-        avail_w = rect_w - margin * 2 - (qr_cand + gap if qr_cand else 0)
-        if avail_w < 100:
+    text_w = 0
+    qr_img = None
+    for fs in range(int(opts.font_size), 7, -1):
+        f, lh, tw = _measure(fs, lines)
+        block = lh * len(lines)
+        if block > avail_h:
             continue
-        for fs in range(int(opts.font_size), 7, -1):
-            probe_font = _load_font(fs)
-            probe = ImageDraw.Draw(Image.new("RGB", (10, 10)))
-            widths = [_text_size(probe, s, probe_font)[0] for s in lines]
-            th = max(_text_size(probe, s, probe_font)[1] for s in lines)
-            block_h = int(th * 1.55) * len(lines)
-            if max(widths) <= avail_w and block_h <= rect_h - margin * 2:
-                font, qr_size, line_h = probe_font, qr_cand, int(th * 1.55)
-                break
-        if font is not None:
+        img_qr = _qr_for(min(block, int(opts.qr_size))) if opts.qr else None
+        # 二维码明显高过文字块时宁可不要，免得在小图上喧宾夺主
+        if img_qr is not None and img_qr.size[1] > block * 1.6:
+            img_qr = None
+        need_w = tw + (gap + img_qr.size[0] if img_qr else 0)
+        if need_w <= avail_w:
+            font, line_h, text_w, qr_img = f, lh, tw, img_qr
             break
 
     if font is None:
-        # 极端小图：只放一行最短的码
-        qr_size = 0
+        # 极端小图：只保留防伪码那一行
+        lines = [code]
+        qr_img = None
         for fs in range(min(int(opts.font_size), 12), 5, -1):
-            probe_font = _load_font(fs)
-            probe = ImageDraw.Draw(Image.new("RGB", (10, 10)))
-            if _text_size(probe, code, probe_font)[0] <= rect_w - margin * 2:
-                font, line_h = probe_font, int(_text_size(probe, code, probe_font)[1] * 1.5)
-                lines = [code]
+            f, lh, tw = _measure(fs, lines)
+            if tw <= avail_w and lh <= avail_h:
+                font, line_h, text_w = f, lh, tw
                 break
         if font is None:
             raise WatermarkError(
@@ -450,26 +510,23 @@ def apply_watermark(img: Image.Image,
     alpha = max(0, min(255, int(255 * max(0.0, min(1.0, opts.opacity)))))
     block_h = line_h * len(lines)
 
-    # 垂直方向贴着水印区底部，水平从左边距开始
-    text_y = y1 - margin - block_h + max(0, (line_h - _text_size(draw, lines[0], font)[1]) // 2)
+    # 二维码放最左边，文字紧随其后；两者底边对齐、垂直居中于同一条基线上
+    has_qr = False
     text_x = x0 + margin
+    if qr_img is not None:
+        qw, qh = qr_img.size
+        qy = y1 - margin - qh
+        if qy >= y0:
+            overlay.paste(qr_img, (x0 + margin, qy))
+            has_qr = True
+            text_x = x0 + margin + qw + gap
 
+    text_y = y1 - margin - block_h
     for i, line in enumerate(lines):
-        yy = text_y + i * line_h
         # 黑色描边 + 浅色填充：深浅背景都能看清
-        draw.text((text_x, yy), line, font=font,
+        draw.text((text_x, text_y + i * line_h), line, font=font,
                   fill=(255, 255, 255, alpha),
                   stroke_width=2, stroke_fill=(0, 0, 0, min(255, alpha + 20)))
-
-    has_qr = False
-    if qr_size:
-        qr_img = _make_qr(payload, qr_size)
-        if qr_img is not None:
-            qw, qh = qr_img.size
-            qx = max(x0 + margin, x1 - margin - qw)
-            qy = max(y0 + margin, y1 - margin - qh)
-            overlay.paste(qr_img, (qx, qy))
-            has_qr = True
 
     out = Image.alpha_composite(base.convert("RGBA"), overlay).convert("RGB")
 
@@ -500,20 +557,18 @@ def read_payload(img: Image.Image) -> Optional[str]:
         return None
 
     detector = cv2.QRCodeDetector()
-    try:
-        data, _pts, _ = detector.detectAndDecode(crop)
-    except Exception:
-        return None
-    if data:
-        return str(data)
-
-    # 兜底：放大两倍再试一次（小二维码更容易识别）
-    try:
-        big = cv2.resize(crop, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_NEAREST)
-        data, _pts, _ = detector.detectAndDecode(big)
-        return str(data) if data else None
-    except Exception:
-        return None
+    # 原尺寸 + 放大两档：小二维码或噪点背景时，1x 常常定不到位
+    for scale in (1, 2, 3):
+        img_try = crop if scale == 1 else cv2.resize(
+            crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST
+        )
+        try:
+            data, _pts, _ = detector.detectAndDecode(img_try)
+        except Exception:
+            continue
+        if data:
+            return str(data)
+    return None
 
 
 def verify_image(path: str,

@@ -246,20 +246,32 @@ Get-CimInstance Win32_Process -Filter "Name like '%python%'" |
 
 ## 水印与防伪核验
 
-每张截图保存后，工具会在**左下角**写入一块水印：
+每张截图保存后，工具会在**左下角**写入一块水印：二维码在左，三行文字紧随其后，
+两者底边对齐、高度相当：
 
 ```
-2026-10-27 15:27:51
-TS 1793086071
-WSS AFVOAUTX-RAK7JQ3J-VCXVEPA3          [二维码]
+[二维码]  2026年10月27日 15:35:24
+          时间戳 1793086524
+          防伪码 AFVOAVB4-WHGDF4PZ-VGP3W6IP
 ```
 
 | 元素 | 含义 |
 |---|---|
-| `2026-10-27 15:27:51` | 截图时间（本地时区，人眼可读） |
-| `TS 1793086071` | 同一时刻的 Unix 时间戳，机器可读、无时区歧义 |
-| `WSS AFVOAUTX-RAK7JQ3J-VCXVEPA3` | 防伪码，24 字符，自带时间与图像指纹 |
-| 二维码 | 内容为 `WSS1\|<时间>\|<时间戳>\|<防伪码>`，手机扫一下就能读出 |
+| `2026年10月27日 15:35:24` | 截图时间（本地时区，人眼可读） |
+| `时间戳 1793086524` | 同一时刻的 Unix 时间戳，机器可读、无时区歧义 |
+| `防伪码 AFVOAVB4-WHGDF4PZ-VGP3W6IP` | 防伪码，24 字符，自带时间与图像指纹 |
+| 二维码 | 内容为 `WSS1\|<时间戳>\|<防伪码>`，手机扫一下就能读出 |
+
+想切成英文水印，把 `watermark_language` 设为 `"en"`：
+
+```
+[QR]  2026-10-27 15:35:24
+      TS 1793086524
+      WSS AFVOAVB4-WHGDF4PZ-VGP3W6IP
+```
+
+> 二维码边长会**自动对齐三行文字块的高度**，并按二维码模块整数倍取整（否则边缘被插值糊掉、扫不出来）。
+> 图片小到放不下「二维码 + 三行文字」时（约 500×400 以下），自动降级为纯文字水印，防伪码仍可用手工输入核验。
 
 ### 防伪码是怎么来的
 
@@ -296,10 +308,10 @@ WSS AFVOAUTX-RAK7JQ3J-VCXVEPA3          [二维码]
 
 ```bash
 # 自动读二维码核验（推荐）
-python verify_watermark.py wechat_20261027_152751.png
+python verify_watermark.py wechat_20261027_153524.png
 
 # 二维码扫不出来时，把水印上的码抄进去（大小写、空格都不敏感）
-python verify_watermark.py shot.png --code "AFVOAUTX-RAK7JQ3J-VCXVEPA3"
+python verify_watermark.py shot.png --code "AFVOAVB4-WHGDF4PZ-VGP3W6IP"
 
 # 批量核验
 python verify_watermark.py *.png
@@ -317,12 +329,12 @@ python verify_watermark.py shot.png --secret-file D:\keys\wm.key
 ==================================================================
 微信截图防伪核验
 ==================================================================
-文件    : wechat_20261027_152751.png
-尺寸    : 1920x1080
-水印时间: 2026-10-27 15:27:51  (Unix 1793086071)
-防伪码  : AFVOAUTX-RAK7JQ3J-VCXVEPA3
+文件    : wechat_20261027_153524.png
+尺寸    : 900x620
+水印时间: 2026-10-27 15:35:24  (Unix 1793086524)
+防伪码  : AFVOAVB4-WHGDF4PZ-VGP3W6IP
 二维码  : 已识别
-指纹    : 水印记录 f6433fc9 / 当前图片 f6433fc9  ✓ 一致
+指纹    : 水印记录 b1cc32f1 / 当前图片 b1cc32f1  ✓ 一致
 
 结论: ✅ 通过 —— 防伪码真实，图片内容自截图后未被改动
 ```
@@ -330,10 +342,10 @@ python verify_watermark.py shot.png --secret-file D:\keys\wm.key
 被改过时：
 
 ```
-指纹    : 水印记录 f6433fc9 / 当前图片 d12d9176  ✗ 不一致
+指纹    : 水印记录 b1cc32f1 / 当前图片 97e98507  ✗ 不一致
 
 结论: ❌ 不通过 —— 图片已被改动
-      图像指纹不一致：水印记录 f6433fc9，当前图片 d12d9176。
+      图像指纹不一致：水印记录 b1cc32f1，当前图片 97e98507。
       水印区以外的像素被改动过（裁剪、缩放、重编码、涂改都算）。
 ```
 
@@ -376,10 +388,11 @@ python verify_watermark.py shot.png --secret-file D:\keys\wm.key
 | `watermark_font_size` | `15` | 字号；小图自动缩小 |
 | `watermark_opacity` | `0.92` | 文字不透明度 |
 | `watermark_margin` | `14` | 距图片边缘的内边距 |
-| `watermark_show_timestamp` | `true` | 是否显示 `TS` 那一行 |
-| `watermark_qr` | `true` | 是否附二维码；缺 `qrcode` 库时自动降级为纯文字 |
-| `watermark_qr_size` | `120` | 二维码目标边长（按模块整数倍取整） |
-| `watermark_code_prefix` | `WSS` | 防伪码前缀标识 |
+| `watermark_show_timestamp` | `true` | 是否显示「时间戳」那一行 |
+| `watermark_qr` | `true` | 是否在文字左侧附二维码；缺 `qrcode` 库时自动降级为纯文字 |
+| `watermark_qr_size` | `120` | 二维码目标边长（按模块整数倍取整，并自动对齐文字块高度） |
+| `watermark_language` | `zh` | 水印文案语言：`zh` 全中文 / `en` 英文 |
+| `watermark_code_prefix` | `null` | 覆盖「防伪码」标签；`null` = 跟随 `watermark_language` |
 | `watermark_secret_file` | `null` | 密钥路径，`null` = 默认位置 |
 
 > **开启水印后输出格式会被强制为 PNG。** JPEG 有损，重编码会改变像素，核验必然报
@@ -478,7 +491,8 @@ python selftest.py
 | `watermark_show_timestamp` | `true` | 是否显示 Unix 时间戳那一行 |
 | `watermark_qr` | `true` | 是否附二维码（缺失 `qrcode` 库时自动降级） |
 | `watermark_qr_size` | `120` | 二维码目标边长 |
-| `watermark_code_prefix` | `WSS` | 防伪码前缀标识 |
+| `watermark_language` | `zh` | 水印文案语言：`zh` 全中文（默认）/ `en` 英文 |
+| `watermark_code_prefix` | `null` | 覆盖「防伪码」标签；`null` = 跟随语言 |
 | `watermark_secret_file` | `null` | 密钥路径，`null` = `~/.wechat_screenshot/watermark.key` |
 
 > 开启水印后输出强制为 PNG；原理与核验方式见[水印与防伪核验](#水印与防伪核验)。

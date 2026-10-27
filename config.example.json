@@ -63,7 +63,10 @@
   "watermark_show_timestamp": true,
   "watermark_qr": true,
   "watermark_qr_size": 120,
-  "watermark_code_prefix": "WSS",
+  "_watermark_language": "水印文案语言：zh = 全中文（2026年10月27日 15:35:24 / 时间戳 / 防伪码），en = 英文（2026-10-27 15:35:24 / TS / WSS）",
+  "watermark_language": "zh",
+  "_watermark_code_prefix": "覆盖「防伪码」这个标签。null = 跟随 watermark_language，一般不需要改",
+  "watermark_code_prefix": null,
   "_watermark_secret_file": "签名密钥文件。null 表示用 ~/.wechat_screenshot/watermark.key（首次运行自动生成，请务必备份；丢了密钥旧图无法核验）",
   "watermark_secret_file": null,
 

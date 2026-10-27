@@ -170,9 +170,10 @@ class Config:
     watermark_opacity: float = 0.92           # 文字不透明度 0~1
     watermark_margin: int = 14                # 距图片边缘的内边距
     watermark_show_timestamp: bool = True     # 是否显示 Unix 时间戳那一行
-    watermark_qr: bool = True                 # 是否在右侧放二维码（扫码即可读防伪码）
+    watermark_qr: bool = True                 # 是否在文字左侧放二维码（扫码即可读防伪码）
     watermark_qr_size: int = 120              # 二维码目标边长
-    watermark_code_prefix: str = "WSS"        # 防伪码前缀标识
+    watermark_language: str = "zh"            # 水印文案语言: zh=中文 / en=英文
+    watermark_code_prefix: Optional[str] = None  # 覆盖「防伪码」标签；None = 跟随语言
     watermark_secret_file: Optional[str] = None  # 密钥文件；None = ~/.wechat_screenshot/watermark.key
 
     # --- 其它 ---
@@ -202,6 +203,8 @@ class Config:
             raise ValueError("watermark_opacity 必须在 0~1 之间")
         if int(self.watermark_qr_size) < 32:
             raise ValueError("watermark_qr_size 至少 32")
+        if str(self.watermark_language).lower() not in ("zh", "en"):
+            raise ValueError("watermark_language 只能是 'zh'（中文）或 'en'（英文）")
 
         # 水印核验依赖无损像素：配了 jpg 就自动纠正为 png，
         # 否则会出现「图片上有防伪码，但一核验就报篡改」的自相矛盾。
@@ -1613,7 +1616,8 @@ def apply_watermark_to_file(cfg: Config, path: str):
         show_timestamp=bool(cfg.watermark_show_timestamp),
         qr=bool(cfg.watermark_qr),
         qr_size=int(cfg.watermark_qr_size),
-        code_prefix=str(cfg.watermark_code_prefix),
+        language=str(cfg.watermark_language or "zh"),
+        code_prefix=cfg.watermark_code_prefix or None,
     )
     secret = wm.load_secret(cfg.watermark_secret_file)
 
@@ -2054,8 +2058,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     LOGGER.info("触发方式: %s", "工具自动按" if cfg.trigger == "auto" else "你手动按")
     LOGGER.info("截图模式: %s", cfg.capture_mode)
     if cfg.watermark_enabled:
-        LOGGER.info("水印    : 开启（左下角：时间 + 时间戳 + 防伪码%s）",
-                    " + 二维码" if cfg.watermark_qr else "")
+        LOGGER.info("水印    : 开启（左下角：时间 + 时间戳 + 防伪码%s，%s）",
+                    " + 二维码" if cfg.watermark_qr else "",
+                    "中文" if str(cfg.watermark_language).lower() == "zh" else "英文")
         LOGGER.info("密钥文件: %s", secret_hint)
         LOGGER.info("核验命令: python verify_watermark.py <图片路径>")
     else:
