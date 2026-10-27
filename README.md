@@ -81,7 +81,7 @@ Press `Alt+A` as usual — the tool then detects the floating screenshot toolbar
 ## 安装
 
 ```bash
-git clone https://github.com/ZhuShang/wechat-auto-screenshot.git
+git clone https://github.com/KukaNo996/wechat-auto-screenshot.git
 cd wechat-auto-screenshot
 
 # 建议使用虚拟环境
@@ -569,4 +569,4 @@ python wechat_screenshot.py --timeout-manual 0
 
 ## License
 
-[MIT](LICENSE) © 2026 ZhuShang
+[MIT](LICENSE) © 2026 KukaNo996
