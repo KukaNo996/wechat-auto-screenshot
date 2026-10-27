@@ -1,0 +1,47 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ---- 虚拟环境 ----
+.venv/
+venv/
+env/
+ENV/
+
+# ---- 本机配置（含绝对路径，不应提交）----
+config.json
+config_*.json
+!config.example.json
+
+# ---- 运行产物 ----
+*.log
+screenshots/
+assets/icons/
+
+# ---- 编辑器 / IDE ----
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---- 内部工作记录（不对外）----
+.workbuddy/
+
+# ---- 测试与调试残留 ----
+.pytest_cache/
+.coverage
+htmlcov/
+probe_*.png
+crop_*.png
+_probe_*.py
+_verify_*.py

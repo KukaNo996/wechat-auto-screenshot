@@ -1,0 +1,10 @@
+# 运行依赖（Windows only）
+# 安装: pip install -r requirements.txt
+
+pyautogui>=0.9.54        # 模拟鼠标键盘
+pywin32>=306             # Win32 窗口枚举与消息投递
+pillow>=10.0             # 屏幕抓取与图片处理
+opencv-python>=4.8       # 模板匹配识别「下载」按钮
+numpy>=1.24              # OpenCV 的数组运算基础
+psutil>=5.9              # 微信进程检测
+pyperclip>=1.8           # 剪贴板辅助（备用）

@@ -1,0 +1,60 @@
+{
+  "_说明": "配置示例。复制为 config.json 后按需修改。所有字段都可省略，缺省用程序内置默认值。以 _ 开头的键仅为注释，程序会忽略。本文件可直接使用。",
+
+  "save_dir": "D:\\Screenshots\\WeChat",
+  "filename_format": "{prefix}_{date}_{time}",
+  "prefix": "wechat",
+  "file_format": "png",
+  "jpeg_quality": 95,
+  "_overwrite": "false = 重名时自动加 _1/_2 后缀，绝不覆盖已有文件",
+  "overwrite": false,
+  "keep_wechat_temp": true,
+
+  "_交互": "trigger=manual 表示工具只等、快捷键由你按（默认）；auto 表示工具代按",
+  "hotkey": ["alt", "a"],
+  "trigger": "manual",
+  "capture_mode": "region",
+  "_region": "capture_mode=region 时生效。null=你手动拖拽；填 [x1,y1,x2,y2] 则自动框选",
+  "region": null,
+  "drag_duration": 0.5,
+  "session_keyword": null,
+  "chat_hwnd": null,
+  "_watch_interval": "每次保存后的静默秒数，0 = 立即回到监听",
+  "watch_interval": 0.0,
+  "_keep_overlay_on_error": "失败时是否保留浮层（true 便于你手动点下载）",
+  "keep_overlay_on_error": false,
+
+  "_延时_秒": "",
+  "delay_before_hotkey": 0.6,
+  "delay_after_hotkey": 1.2,
+  "delay_after_select": 0.9,
+  "delay_after_download": 1.5,
+  "delay_after_save": 1.0,
+  "poll_interval": 0.15,
+
+  "_超时_秒": {
+    "_说明": "timeout_overlay=0 表示无限等待浮层（监听模式推荐）。timeout_manual 是识别失败后等你手动点下载的上限，0=禁用兜底",
+    "timeout_overlay": 0.0,
+    "timeout_toolbar": 8.0,
+    "timeout_dialog": 10.0,
+    "timeout_save": 15.0,
+    "timeout_manual": 60.0
+  },
+
+  "_识别": "match_threshold 是「下载」按钮的模板匹配阈值。实测目标 1.0000、干扰项 ≤0.60，0.75 区分度充足",
+  "match_threshold": 0.75,
+  "template_path": null,
+
+  "_进程与窗口": "",
+  "wechat_processes": ["Weixin.exe", "WeChat.exe"],
+  "activate_wechat": true,
+  "wechat_window_title": "微信",
+
+  "_日志": "log_file 设为 null 表示不写文件；若指定路径，目录会自动创建，不可写时降级为仅终端输出",
+  "log_level": "INFO",
+  "log_file": null,
+  "log_to_console": true,
+
+  "_其它": "",
+  "dry_run": false
+}
