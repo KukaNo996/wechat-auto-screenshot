@@ -20,6 +20,10 @@ config.json
 config_*.json
 !config.example.json
 
+# ---- 水印签名密钥（绝不提交，泄露等于防伪失效）----
+*.key
+.watermark_key
+
 # ---- 运行产物 ----
 *.log
 screenshots/

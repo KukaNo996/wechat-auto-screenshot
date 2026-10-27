@@ -22,6 +22,7 @@ Press `Alt+A` as usual — the tool then detects the floating screenshot toolbar
 **Highlights**
 
 - **Three capture modes**: region selection, full screen, or a standalone WeChat chat window
+- **Tamper-evident watermark** — every screenshot gets a bottom-left watermark with time, Unix timestamp and a signed verification code; `verify_watermark.py` proves whether the image was modified afterwards
 - **Template matching over icon counting** — survives WeChat UI revision, no hard-coded icon index
 - **Manual fallback** — if detection fails, just click the button yourself; the tool takes over from there
 - **Safety-first input injection** — every keystroke and click is gated on the overlay actually existing, so it can never hit your own windows
@@ -40,6 +41,7 @@ Press `Alt+A` as usual — the tool then detects the floating screenshot toolbar
 - [快速开始](#快速开始)
 - [三种截图模式](#三种截图模式)
 - [监听模式](#监听模式)
+- [水印与防伪核验](#水印与防伪核验)
 - [配置说明](#配置说明)
 - [命令行参数](#命令行参数)
 - [工作原理](#工作原理)
@@ -57,12 +59,14 @@ Press `Alt+A` as usual — the tool then detects the floating screenshot toolbar
 | **日期时间命名** | `wechat_20261027_143025.png`，天然不重名；重名时自动加 `_1` 后缀，**绝不覆盖** |
 | **三种截图模式** | 区域框选 / 全屏 / 聊天独立窗口 |
 | **常驻监听** | 按一次截一张，连续多张不用重启；`Ctrl+C` 干净退出 |
+| **防伪水印** | 左下角写入时间 + 时间戳 + 签名防伪码，附可扫描二维码 |
+| **篡改可核验** | `verify_watermark.py` 一条命令判定图片是否被改过，改 1 个像素都能检出 |
 | **模板匹配识别** | 不依赖图标序号，微信改版后重新生成模板即可 |
 | **手动兜底** | 识别失败不中断，你点一下 ⬇，后续仍自动完成 |
 | **不误伤窗口** | 所有输入注入都以「浮层确实存在」为前提 |
 | **单实例保护** | 拒绝多开，避免实例间抢对话框 |
 | **详细日志** | 每步都有输出，失败给出具体原因和排查建议 |
-| **纯本地运行** | 不联网、不上传、无遥测 |
+| **纯本地运行** | 不联网、不上传、无遥测；密钥只存在你本机 |
 
 ---
 
@@ -157,6 +161,9 @@ python wechat_screenshot.py -c config.json
 | 只看识别不点击 | `python wechat_screenshot.py -c config.json --dry-run -v` |
 | 列出可截的聊天窗口 | `python wechat_screenshot.py --list-windows` |
 | 重建按钮模板 | `python wechat_screenshot.py --make-template` |
+| 本次不加水印 | `python wechat_screenshot.py -c config.json --no-watermark` |
+| 核验一张图是否被改 | `python verify_watermark.py 图片路径.png` |
+| 水印功能自检 | `python selftest.py` |
 
 ---
 
@@ -237,6 +244,160 @@ Get-CimInstance Win32_Process -Filter "Name like '%python%'" |
 
 ---
 
+## 水印与防伪核验
+
+每张截图保存后，工具会在**左下角**写入一块水印：
+
+```
+2026-10-27 15:27:51
+TS 1793086071
+WSS AFVOAUTX-RAK7JQ3J-VCXVEPA3          [二维码]
+```
+
+| 元素 | 含义 |
+|---|---|
+| `2026-10-27 15:27:51` | 截图时间（本地时区，人眼可读） |
+| `TS 1793086071` | 同一时刻的 Unix 时间戳，机器可读、无时区歧义 |
+| `WSS AFVOAUTX-RAK7JQ3J-VCXVEPA3` | 防伪码，24 字符，自带时间与图像指纹 |
+| 二维码 | 内容为 `WSS1\|<时间>\|<时间戳>\|<防伪码>`，手机扫一下就能读出 |
+
+### 防伪码是怎么来的
+
+那 24 个字符不是随机串，而是 **15 字节结构化数据的 base32 编码**：
+
+| 偏移 | 长度 | 字段 | 说明 |
+|---|---|---|---|
+| 0 | 1 | `ver` | 版本号，当前为 `1` |
+| 1 | 4 | `ts` | Unix 时间戳（大端）—— **从码里可直接还原时间** |
+| 5 | 4 | `fp` | 图像指纹前 4 字节 —— **从码里可直接还原图片信息** |
+| 9 | 6 | `mac` | `HMAC-SHA256(密钥, "WSS1" + ver+ts+fp)` 的前 6 字节 |
+
+所以「防伪码可解析为时间信息 + 图片信息」是在协议层面成立的，不依赖任何在线服务。
+
+### 图像指纹：水印画上去了为什么还能验
+
+这是整个方案唯一需要想清楚的地方。水印会改像素，若用整图哈希，画完水印哈希就变了，
+形成循环依赖。
+
+解法是**约定一块固定的水印区域，并把它排除在指纹之外**：
+
+```
+指纹 = SHA256(宽, 高, 除左下角水印区以外的所有像素)
+```
+
+实现上把该区域像素置 0 后整体哈希 —— 快，且核验端可逐字节复现。于是：
+
+- 水印画在排除区里 → 指纹不受影响
+- 水印区外的任何改动（涂改、裁剪、缩放、重编码）→ 指纹必然变化
+
+核验时用同一规则重算指纹，与防伪码里的 `fp` 比对。
+
+### 核验用法
+
+```bash
+# 自动读二维码核验（推荐）
+python verify_watermark.py wechat_20261027_152751.png
+
+# 二维码扫不出来时，把水印上的码抄进去（大小写、空格都不敏感）
+python verify_watermark.py shot.png --code "AFVOAUTX-RAK7JQ3J-VCXVEPA3"
+
+# 批量核验
+python verify_watermark.py *.png
+
+# 输出 JSON 便于脚本处理
+python verify_watermark.py shot.png --json
+
+# 密钥不在默认位置时
+python verify_watermark.py shot.png --secret-file D:\keys\wm.key
+```
+
+通过时：
+
+```
+==================================================================
+微信截图防伪核验
+==================================================================
+文件    : wechat_20261027_152751.png
+尺寸    : 1920x1080
+水印时间: 2026-10-27 15:27:51  (Unix 1793086071)
+防伪码  : AFVOAUTX-RAK7JQ3J-VCXVEPA3
+二维码  : 已识别
+指纹    : 水印记录 f6433fc9 / 当前图片 f6433fc9  ✓ 一致
+
+结论: ✅ 通过 —— 防伪码真实，图片内容自截图后未被改动
+```
+
+被改过时：
+
+```
+指纹    : 水印记录 f6433fc9 / 当前图片 d12d9176  ✗ 不一致
+
+结论: ❌ 不通过 —— 图片已被改动
+      图像指纹不一致：水印记录 f6433fc9，当前图片 d12d9176。
+      水印区以外的像素被改动过（裁剪、缩放、重编码、涂改都算）。
+```
+
+退出码：`0` 通过 / `1` 不通过 / `2` 参数或环境错误。
+
+### 能查出什么，查不出什么
+
+| 场景 | 结果 |
+|---|---|
+| 改内容、保留原水印 | ❌ 检出（指纹不符） |
+| 改 1 个像素 | ❌ 检出 |
+| 裁剪 / 缩放 / 另存 JPEG | ❌ 检出 |
+| 改水印上的时间但不重签 | ❌ 检出（签名不符） |
+| 用别人的密钥重新生成 | ❌ 检出（签名不符） |
+| **把水印整块涂掉** | ⚠️ 报「读不到防伪码」——这本身就是可疑信号 |
+| **拿到你密钥的人** | ✅ 他能伪造，且签名看起来有效 |
+
+最后一条是这套方案的边界，必须讲明白：**对称签名（HMAC）的安全性完全依赖密钥保密**，
+密钥泄露即防伪失效，且事后无法区分。若你需要「公开公钥、让任何人独立核验」，
+需要换成非对称签名（Ed25519，本项目暂未内置）。
+
+### 密钥管理
+
+首次运行会在 `~/.wechat_screenshot/watermark.key` 自动生成 32 字节随机密钥：
+
+```
+密钥文件: C:\Users\<你>\.wechat_screenshot\watermark.key
+```
+
+- **必须备份**：丢了密钥，之前所有截图都无法再核验（水印还看得见，但验不了签）
+- **不要提交**：`.gitignore` 已排除 `*.key`
+- 想换位置：设 `watermark_secret_file`
+- 想让同事核验：把密钥文件给他（这也是 HMAC 的局限）
+
+### 相关配置
+
+| 字段 | 默认值 | 说明 |
+|---|---|---|
+| `watermark_enabled` | `true` | 是否加水印 |
+| `watermark_font_size` | `15` | 字号；小图自动缩小 |
+| `watermark_opacity` | `0.92` | 文字不透明度 |
+| `watermark_margin` | `14` | 距图片边缘的内边距 |
+| `watermark_show_timestamp` | `true` | 是否显示 `TS` 那一行 |
+| `watermark_qr` | `true` | 是否附二维码；缺 `qrcode` 库时自动降级为纯文字 |
+| `watermark_qr_size` | `120` | 二维码目标边长（按模块整数倍取整） |
+| `watermark_code_prefix` | `WSS` | 防伪码前缀标识 |
+| `watermark_secret_file` | `null` | 密钥路径，`null` = 默认位置 |
+
+> **开启水印后输出格式会被强制为 PNG。** JPEG 有损，重编码会改变像素，核验必然报
+> 「已改动」——那不是误报，是格式选错了。
+
+### 自检
+
+不装微信也能验证整套逻辑：
+
+```bash
+python selftest.py
+```
+
+会验证 26 项性质：防伪码编解码、水印是否严格落在排除区、原图通过核验、
+改 1 像素 / 涂抹 / 裁剪 / 缩放全部检出、改码字符签名失效、JPEG 被识破、归档链路串联。
+
+---
+
 ## 配置说明
 
 ### 输出设置
@@ -306,6 +467,22 @@ Get-CimInstance Win32_Process -Filter "Name like '%python%'" |
 | `log_file` | `null` | 日志文件路径，`null` = 不写文件 |
 | `log_to_console` | `true` | 是否输出到终端 |
 
+### 水印与防伪码
+
+| 字段 | 默认值 | 说明 |
+|---|---|---|
+| `watermark_enabled` | `true` | 是否在左下角写入水印 |
+| `watermark_font_size` | `15` | 字号，小图自动缩小 |
+| `watermark_opacity` | `0.92` | 文字不透明度 `0~1` |
+| `watermark_margin` | `14` | 距边缘内边距（px） |
+| `watermark_show_timestamp` | `true` | 是否显示 Unix 时间戳那一行 |
+| `watermark_qr` | `true` | 是否附二维码（缺失 `qrcode` 库时自动降级） |
+| `watermark_qr_size` | `120` | 二维码目标边长 |
+| `watermark_code_prefix` | `WSS` | 防伪码前缀标识 |
+| `watermark_secret_file` | `null` | 密钥路径，`null` = `~/.wechat_screenshot/watermark.key` |
+
+> 开启水印后输出强制为 PNG；原理与核验方式见[水印与防伪核验](#水印与防伪核验)。
+
 ---
 
 ## 命令行参数
@@ -327,10 +504,14 @@ python wechat_screenshot.py [选项]
   --list-windows         列出当前可截图的微信聊天窗口后退出
   --make-template        交互式生成保存按钮模板后退出
   --dry-run              只识别不点击（调试用）
+  --no-watermark         本次运行不加水印与防伪码
+  --watermark-secret FILE  水印签名密钥路径（默认 ~/.wechat_screenshot/watermark.key）
   -v, --verbose          输出调试日志
 ```
 
 **退出码**：`0` 成功 / `1` 业务失败 / `2` 配置或模板错误 / `3` 已有实例在运行
+
+另附一个独立工具 `verify_watermark.py`，参数见[水印与防伪核验](#水印与防伪核验)。
 
 ---
 
@@ -353,7 +534,9 @@ python wechat_screenshot.py [选项]
       ↓
 ⑦ 等待文件落盘 → 移动到目标目录 → 按规则重命名归档
       ↓
-⑧ 打印完整路径 → 回到监听
+⑧ 计算图像指纹（排除左下角水印区）→ 生成防伪码 → 绘制水印与二维码
+      ↓
+⑨ 打印完整路径 + 防伪码 → 回到监听
 ```
 
 ### 识别微信截图浮层
@@ -535,12 +718,38 @@ python wechat_screenshot.py --timeout-manual 0
 不支持。核心依赖 Win32 窗口 API（`EnumWindows`、`GetWindowRect`、`PostMessage` 等）
 与 Windows 标准保存对话框结构。
 
+### Q13：核验报「图片已被改动」，但我什么都没改
+
+先确认三件事：
+
+1. **是不是原始 PNG**？图片经过微信转发、聊天工具压缩、看图软件「另存为」都会
+   重新编码像素，核验必然失败。这不是误报——那些操作确实改了图。
+2. **密钥对不对**？密钥不同会报「签名无效」（`bad_signature`），而不是「已改动」。
+3. **有没有裁剪过**？哪怕切掉 1 像素，尺寸与指纹都会变。
+
+用 `--verbose` 可以看到内部状态码，区分是 `tampered` 还是 `bad_signature`。
+
+### Q14：别人能伪造我的防伪码吗？
+
+分三种情况：
+
+- **没有你的密钥**：伪造不出来。改了图却拿不到有效签名，核验会判「签名无效」。
+- **只有图片、没有密钥**：他连核验都做不了（可以读码，但验不了签）。
+- **拿到了你的密钥**：他能伪造，且签名完全正常——这是 HMAC 的固有边界。
+
+因此密钥文件等同私钥，**不要外发、不要进仓库**。若你需要「谁都能核验但谁都不能伪造」，
+得换非对称签名（Ed25519），欢迎 PR。
+
 ---
 
 ## 安全说明与免责声明
 
 - **本工具纯本地运行**，不联网、不上传任何数据、无遥测。
 - 工具通过模拟键盘鼠标与窗口消息操作微信，**不修改微信程序、不读取聊天内容**。
+- **水印签名密钥只保存在你本机**（默认 `~/.wechat_screenshot/watermark.key`），
+  不会以任何形式发送。密钥泄露等同于防伪能力泄露，请自行妥善保管与备份。
+- 防伪码证明的是「**这张图的像素自签名后未变**」，不等于证明「图片内容真实」——
+  截图者可以只截取局部、可以摆拍。请勿把技术完整性当成事实完整性。
 - 请遵守微信软件许可协议及所在地法律法规，仅用于个人效率提升。
 - 由于依赖界面特征识别，微信大幅改版后可能需要重新生成模板。
 - 按 MIT 协议「按现状」提供，使用风险自负。

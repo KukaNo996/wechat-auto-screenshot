@@ -55,6 +55,18 @@
   "log_file": null,
   "log_to_console": true,
 
+  "_水印与防伪码": "截图后在左下角写入时间 / 时间戳 / 防伪码，并可选附加二维码。开启后输出强制为 png —— jpg 有损会破坏防伪核验",
+  "watermark_enabled": true,
+  "watermark_font_size": 15,
+  "watermark_opacity": 0.92,
+  "watermark_margin": 14,
+  "watermark_show_timestamp": true,
+  "watermark_qr": true,
+  "watermark_qr_size": 120,
+  "watermark_code_prefix": "WSS",
+  "_watermark_secret_file": "签名密钥文件。null 表示用 ~/.wechat_screenshot/watermark.key（首次运行自动生成，请务必备份；丢了密钥旧图无法核验）",
+  "watermark_secret_file": null,
+
   "_其它": "",
   "dry_run": false
 }

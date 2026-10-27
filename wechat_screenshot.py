@@ -164,6 +164,17 @@ class Config:
     log_file: Optional[str] = None       # None 表示不写文件
     log_to_console: bool = True
 
+    # --- 水印 / 防伪码 ---
+    watermark_enabled: bool = True            # 截图后是否在左下角打水印
+    watermark_font_size: int = 15             # 水印字号（自适应缩小以适配小图）
+    watermark_opacity: float = 0.92           # 文字不透明度 0~1
+    watermark_margin: int = 14                # 距图片边缘的内边距
+    watermark_show_timestamp: bool = True     # 是否显示 Unix 时间戳那一行
+    watermark_qr: bool = True                 # 是否在右侧放二维码（扫码即可读防伪码）
+    watermark_qr_size: int = 120              # 二维码目标边长
+    watermark_code_prefix: str = "WSS"        # 防伪码前缀标识
+    watermark_secret_file: Optional[str] = None  # 密钥文件；None = ~/.wechat_screenshot/watermark.key
+
     # --- 其它 ---
     keep_overlay_on_error: bool = False   # 出错时是否保留浮层（便于排查）
     dry_run: bool = False                 # 只识别不点击（调试用）
@@ -185,6 +196,20 @@ class Config:
             raise ValueError("trigger 只能是 'auto'（工具代按）或 'manual'（你手动按）")
         if self.watch_interval < 0:
             raise ValueError("watch_interval 不能为负数")
+        if not 6 <= int(self.watermark_font_size) <= 48:
+            raise ValueError("watermark_font_size 建议在 6~48 之间")
+        if not 0.0 <= float(self.watermark_opacity) <= 1.0:
+            raise ValueError("watermark_opacity 必须在 0~1 之间")
+        if int(self.watermark_qr_size) < 32:
+            raise ValueError("watermark_qr_size 至少 32")
+
+        # 水印核验依赖无损像素：配了 jpg 就自动纠正为 png，
+        # 否则会出现「图片上有防伪码，但一核验就报篡改」的自相矛盾。
+        self.format_forced_by_watermark = (
+            bool(self.watermark_enabled) and self.file_format.lower() in ("jpg", "jpeg")
+        )
+        if self.format_forced_by_watermark:
+            self.file_format = "png"
 
     @property
     def extension(self) -> str:
@@ -1560,6 +1585,46 @@ def ensure_save_dir(cfg: Config) -> None:
         ) from exc
 
 
+def apply_watermark_to_file(cfg: Config, path: str):
+    """
+    给已落盘的图片加上水印（时间 + 时间戳 + 防伪码 + 可选二维码）。
+
+    顺序很重要：文件必须先定型（归档 + 转格式），再画水印；
+    而指纹的计算又必须先于绘制。两者由 watermark 模块内部的
+    「先算指纹、后画水印」保证，这里只负责串起来。
+    """
+    try:
+        import watermark as wm
+    except ImportError as exc:
+        raise ScreenshotError(
+            "水印功能不可用：缺少 watermark.py 或 pillow/opencv 依赖。"
+        ) from exc
+
+    if cfg.extension != "png":
+        raise ScreenshotError(
+            "水印核验要求无损格式，请把 file_format 设为 png（jpg 会改变像素）。"
+        )
+
+    opts = wm.WatermarkOptions(
+        enabled=True,
+        font_size=int(cfg.watermark_font_size),
+        opacity=float(cfg.watermark_opacity),
+        margin=int(cfg.watermark_margin),
+        show_timestamp=bool(cfg.watermark_show_timestamp),
+        qr=bool(cfg.watermark_qr),
+        qr_size=int(cfg.watermark_qr_size),
+        code_prefix=str(cfg.watermark_code_prefix),
+    )
+    secret = wm.load_secret(cfg.watermark_secret_file)
+
+    with Image.open(path) as im:
+        im.load()
+        marked, res = wm.apply_watermark(im, secret, opts)
+
+    marked.save(path, "PNG")
+    return res
+
+
 def archive(cfg: Config, source_path: str, stem: str) -> str:
     """把微信保存的文件移动/复制到目标目录并按命名规则重命名。"""
     ensure_save_dir(cfg)
@@ -1593,6 +1658,19 @@ def archive(cfg: Config, source_path: str, stem: str) -> str:
             LOGGER.debug("已转换为 JPEG (质量 %d)", cfg.jpeg_quality)
         except Exception as exc:
             LOGGER.warning("转 JPEG 失败(保留原格式): %s", exc)
+
+    # 加水印：放在最后一步，此时文件名与格式都已定型
+    if cfg.watermark_enabled:
+        try:
+            wm_res = apply_watermark_to_file(cfg, dest)
+            LOGGER.info(
+                "🔏 水印已添加 | 防伪码 %s | %s | 指纹 %s",
+                wm_res.code,
+                "含二维码" if wm_res.has_qr else "仅文字",
+                wm_res.fingerprint_hex,
+            )
+        except Exception as exc:
+            LOGGER.warning("水印未添加（截图本身已保存）: %s", exc)
 
     LOGGER.info("✅ 截图已保存: %s", dest)
     return dest
@@ -1878,6 +1956,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="列出当前可截图的微信聊天窗口后退出")
     p.add_argument("--make-template", action="store_true", help="交互式生成保存按钮模板后退出")
     p.add_argument("--dry-run", action="store_true", help="只识别不点击")
+    p.add_argument("--no-watermark", action="store_true", help="本次运行不添加水印与防伪码")
+    p.add_argument("--watermark-secret", metavar="FILE",
+                   help="水印密钥文件路径（默认 ~/.wechat_screenshot/watermark.key）")
     p.add_argument("-v", "--verbose", action="store_true", help="输出调试日志")
     return p
 
@@ -1906,8 +1987,17 @@ def apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         cfg.timeout_manual = args.timeout_manual
     if args.dry_run:
         cfg.dry_run = True
+    if args.no_watermark:
+        cfg.watermark_enabled = False
+    if args.watermark_secret:
+        cfg.watermark_secret_file = args.watermark_secret
     if args.verbose:
         cfg.log_level = "DEBUG"
+
+    # 命令行可能把格式改回 jpg，这里再兜一次，保证「开水印必无损」
+    if cfg.watermark_enabled and cfg.file_format.lower() in ("jpg", "jpeg"):
+        cfg.file_format = "png"
+        cfg.format_forced_by_watermark = True
     return cfg
 
 
@@ -1938,6 +2028,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except Exception:
         pass
 
+    # 水印核验依赖无损像素；配了 jpg 的话 Config 层已纠正，这里只做告知
+    if getattr(cfg, "format_forced_by_watermark", False):
+        LOGGER.warning("水印核验需要无损格式，输出格式已自动改为 png（原配置为 jpg）")
+
+    # 提前初始化密钥：第一张图才报错的话，监听模式下会很难发现
+    secret_hint = ""
+    if cfg.watermark_enabled:
+        try:
+            import watermark as _wm
+            key = _wm.load_secret(cfg.watermark_secret_file)
+            secret_hint = os.path.abspath(cfg.watermark_secret_file or _wm.DEFAULT_SECRET_FILE)
+            LOGGER.debug("水印密钥: %s (%d 字节)", secret_hint, len(key))
+        except Exception as exc:
+            LOGGER.error("水印初始化失败: %s", exc)
+            LOGGER.error("可先运行 python wechat_screenshot.py --no-watermark 跳过水印")
+            return 2
+
     LOGGER.info("=" * 66)
     LOGGER.info("微信截图自动化工具启动")
     LOGGER.info("保存目录: %s", cfg.save_dir)
@@ -1946,6 +2053,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     LOGGER.info("快捷键  : %s", " + ".join(cfg.hotkey))
     LOGGER.info("触发方式: %s", "工具自动按" if cfg.trigger == "auto" else "你手动按")
     LOGGER.info("截图模式: %s", cfg.capture_mode)
+    if cfg.watermark_enabled:
+        LOGGER.info("水印    : 开启（左下角：时间 + 时间戳 + 防伪码%s）",
+                    " + 二维码" if cfg.watermark_qr else "")
+        LOGGER.info("密钥文件: %s", secret_hint)
+        LOGGER.info("核验命令: python verify_watermark.py <图片路径>")
+    else:
+        LOGGER.info("水印    : 关闭")
     LOGGER.info("=" * 66)
 
     # 提前校验保存目录，避免进入监听后每轮都因目录不可用而失败
